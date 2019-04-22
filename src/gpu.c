@@ -362,44 +362,94 @@ const struct pl_fmt *pl_find_named_fmt(const struct pl_gpu *gpu, const char *nam
 const struct pl_tex *pl_tex_create(const struct pl_gpu *gpu,
                                    const struct pl_tex_params *params)
 {
-    pl_assert(!params->import_handle || !params->export_handle);
+    if (params->import_handle && params->export_handle) {
+        PL_ERR(gpu, "Both import and export handles cannot be set for texture creation! "
+                    "(import_handle: %s, export_handle: %s)",
+               params->import_handle ? "set" : "unset",
+               params->export_handle ? "set" : "unset");
+        return NULL;
+    }
+
     if (params->export_handle) {
-        pl_assert(params->export_handle & gpu->export_caps.tex);
-        pl_assert(PL_ISPOT(params->export_handle));
+        if (!(params->export_handle & gpu->export_caps.tex) ||
+            !PL_ISPOT(params->export_handle)) {
+            PL_ERR(gpu, "Export handle is misconfigured!");
+            return NULL;
+        }
     }
     if (params->import_handle) {
-        pl_assert(params->import_handle & gpu->import_caps.tex);
-        pl_assert(PL_ISPOT(params->import_handle));
+        if (!(params->import_handle & gpu->import_caps.tex) ||
+            !PL_ISPOT(params->import_handle)) {
+            PL_ERR(gpu, "Import handle is misconfigured!");
+            return NULL;
+        }
     }
 
     switch (pl_tex_params_dimension(*params)) {
     case 1:
-        pl_assert(params->w > 0);
-        pl_assert(params->w <= gpu->limits.max_tex_1d_dim);
-        pl_assert(!params->renderable);
+        if ((params->w <= 0) ||
+            (params->w > gpu->limits.max_tex_1d_dim) ||
+            params->renderable) {
+            PL_ERR(gpu, "1-dimensional texture validity checks failed! "
+                        "(width: %d, GPU 1-D texture limit: %d, %s)",
+                   params->w, gpu->limits.max_tex_1d_dim,
+                   params->renderable ? "renderable" : "not renderable");
+            return NULL;
+        }
         break;
     case 2:
-        pl_assert(params->w > 0 && params->h > 0);
-        pl_assert(params->w <= gpu->limits.max_tex_2d_dim);
-        pl_assert(params->h <= gpu->limits.max_tex_2d_dim);
+        if ((params->w <= 0 || params->h <= 0) ||
+            (params->w > gpu->limits.max_tex_2d_dim) ||
+            (params->h > gpu->limits.max_tex_2d_dim)) {
+            PL_ERR(gpu, "2-dimensional texture validity checks failed! "
+                        "(width: %d, height: %d, GPU 2-D texture limit: %d)",
+                   params->w, params->h, gpu->limits.max_tex_2d_dim);
+            return NULL;
+        }
         break;
     case 3:
-        pl_assert(params->w > 0 && params->h > 0 && params->d > 0);
-        pl_assert(params->w <= gpu->limits.max_tex_3d_dim);
-        pl_assert(params->h <= gpu->limits.max_tex_3d_dim);
-        pl_assert(params->d <= gpu->limits.max_tex_3d_dim);
-        pl_assert(!params->renderable);
+        if ((params->w <= 0 || params->h <= 0 || params->d <= 0) ||
+            (params->w > gpu->limits.max_tex_3d_dim) ||
+            (params->h > gpu->limits.max_tex_3d_dim) ||
+            (params->d > gpu->limits.max_tex_3d_dim) ||
+            params->renderable) {
+            PL_ERR(gpu, "3-dimensional texture validity checks failed! "
+                        "(width: %d, height: %d, depth: %d, GPU 3-D texture limit: %d, %s)",
+                   params->w, params->h, params->d, gpu->limits.max_tex_3d_dim,
+                   params->renderable ? "renderable" : "not renderable");
+            return NULL;
+        }
         break;
     }
 
     const struct pl_fmt *fmt = params->format;
-    pl_assert(fmt);
-    pl_assert(!params->sampleable || fmt->caps & PL_FMT_CAP_SAMPLEABLE);
-    pl_assert(!params->renderable || fmt->caps & PL_FMT_CAP_RENDERABLE);
-    pl_assert(!params->storable   || fmt->caps & PL_FMT_CAP_STORABLE);
-    pl_assert(!params->blit_src   || fmt->caps & PL_FMT_CAP_BLITTABLE);
-    pl_assert(!params->blit_dst   || fmt->caps & PL_FMT_CAP_BLITTABLE);
-    pl_assert(params->sample_mode != PL_TEX_SAMPLE_LINEAR || fmt->caps & PL_FMT_CAP_LINEAR);
+    if (!fmt) {
+        PL_ERR(gpu, "Texture format is not set!");
+        return NULL;
+    }
+
+    if ((params->sampleable && !(fmt->caps & PL_FMT_CAP_SAMPLEABLE)) ||
+        (params->renderable && !(fmt->caps & PL_FMT_CAP_RENDERABLE)) ||
+        (params->storable   && !(fmt->caps & PL_FMT_CAP_STORABLE)) ||
+        (params->blit_src   && !(fmt->caps & PL_FMT_CAP_BLITTABLE)) ||
+        (params->blit_dst   && !(fmt->caps & PL_FMT_CAP_BLITTABLE)) ||
+        (params->sample_mode == PL_TEX_SAMPLE_LINEAR && !(fmt->caps & PL_FMT_CAP_LINEAR))) {
+        PL_ERR(gpu, "Requested texture parameters cannot be fulfilled by "
+                    "the selected texture format %s! "
+                    "(sampleable: %d = %d, renderable: %d = %d, "
+                    "storable: %d = %d, source is blittable: %d = %d, "
+                    "destination is blittable: %d = %d, "
+                    "linear sample mode: %d = %d)",
+               fmt->name ? fmt->name : "<No Name>",
+               params->sampleable, !!(fmt->caps & PL_FMT_CAP_SAMPLEABLE),
+               params->renderable, !!(fmt->caps & PL_FMT_CAP_RENDERABLE),
+               params->storable, !!(fmt->caps & PL_FMT_CAP_STORABLE),
+               params->blit_src, !!(fmt->caps & PL_FMT_CAP_BLITTABLE),
+               params->blit_dst, !!(fmt->caps & PL_FMT_CAP_BLITTABLE),
+               params->sample_mode == PL_TEX_SAMPLE_LINEAR,
+               !!(fmt->caps & PL_FMT_CAP_LINEAR));
+        return NULL;
+    }
 
     return gpu->impl->tex_create(gpu, params);
 }
